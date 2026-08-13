@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  # MongoDB service for User memory
+  mongodb:
+    image: mongo:6.0
+    container_name: chatbot_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - chatbot_network
+    restart: unless-stopped
+
+  # Neo4j service for Knowledge Graph
+  neo4j:
+    image: neo4j:5.12-community
+    container_name: chatbot_neo4j
+    ports:
+      - "7474:7474" # HTTP Dashboard
+      - "7687:7687" # Bolt protocol
+    environment:
+      - NEO4J_AUTH=neo4j/password
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - chatbot_network
+    restart: unless-stopped
+
+  # FastAPI app service
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    container_name: chatbot_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=password
+      - USE_LOCAL_FALLBACK=false # Connect to real containers in Docker context
+    env_file:
+      - ../.env
+    depends_on:
+      - mongodb
+      - neo4j
+    networks:
+      - chatbot_network
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
+  neo4j_data:
+  neo4j_logs:
+
+networks:
+  chatbot_network:
+    driver: bridge

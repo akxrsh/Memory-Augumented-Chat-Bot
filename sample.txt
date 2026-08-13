@@ -1,0 +1,1 @@
+“Akarsh is an AI Engineer who builds systems using Python. Python is a programming language. Akarsh uses FastAPI to build web servers, and FastAPI integrates with LangGraph for agent orchestration.”

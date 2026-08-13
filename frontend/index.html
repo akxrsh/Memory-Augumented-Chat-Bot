@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memory-Augmented Chatbot System</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f5f3ff',
+                            100: '#ede9fe',
+                            500: '#8b5cf6',
+                            600: '#7c3aed',
+                            700: '#6d28d9',
+                            900: '#4c1d95',
+                        },
+                        dark: {
+                            50: '#1a1a24',
+                            100: '#12121a',
+                            200: '#0a0a0f',
+                            card: 'rgba(26, 26, 36, 0.65)'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Vis.js for Graph -->
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        body {
+            font-family: 'Plus Jakarta Sans', 'Outfit', sans-serif;
+            background: radial-gradient(circle at top left, #12121a 0%, #0a0a0f 100%);
+            color: #e2e8f0;
+        }
+        .glass {
+            background: rgba(26, 26, 36, 0.6);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .glass-active {
+            background: rgba(139, 92, 246, 0.15);
+            border: 1px solid rgba(139, 92, 246, 0.3);
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.1);
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.25);
+        }
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 0.6; }
+            50% { opacity: 0.9; }
+        }
+        .glow-pulse {
+            animation: pulse-glow 2s infinite ease-in-out;
+        }
+    </style>
+</head>
+<body class="h-screen overflow-hidden custom-scrollbar">
+    <div id="root" class="h-full"></div>
+
+    <!-- React and Babel CDNs -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- React App Logic -->
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        function App() {
+            // State variables
+            const [token, setToken] = useState(localStorage.getItem('token') || '');
+            const [username, setUsername] = useState(localStorage.getItem('username') || '');
+            const [role, setRole] = useState(localStorage.getItem('role') || '');
+            
+            const [activeTab, setActiveTab] = useState('chat');
+            const [sessions, setSessions] = useState([]);
+            const [currentSessionId, setCurrentSessionId] = useState('');
+            const [messages, setMessages] = useState([]);
+            const [inputMessage, setInputMessage] = useState('');
+            const [isSending, setIsSending] = useState(false);
+            
+            // Memory State
+            const [memories, setMemories] = useState([]);
+            const [newMemoryText, setNewMemoryText] = useState('');
+            
+            // Docs/Scraping State
+            const [file, setFile] = useState(null);
+            const [scrapeUrl, setScrapeUrl] = useState('');
+            const [ingestStatus, setIngestStatus] = useState('');
+            
+            // Eval State
+            const [metrics, setMetrics] = useState({
+                average_faithfulness: 1.0,
+                average_relevance: 1.0,
+                average_recall: 1.0,
+                average_latency: 0.0,
+                total_cost: 0.0,
+                total_evaluations: 0
+            });
+
+            // Graph State
+            const [hasGraphNodes, setHasGraphNodes] = useState(true);
+
+            // Auth State
+            const [authUsername, setAuthUsername] = useState('');
+            const [authPassword, setAuthPassword] = useState('');
+            const [authError, setAuthError] = useState('');
+            const [isRegistering, setIsRegistering] = useState(false);
+
+            // Ref for scrolling chat
+            const chatEndRef = useRef(null);
+            const graphContainerRef = useRef(null);
+            const networkRef = useRef(null);
+
+            // Base URL configuration
+            const API_BASE = `${window.location.origin}/api/v1`;
+
+            // Headers configuration helper
+            const getHeaders = () => ({
+                "Authorization": `Bearer ${token}`,
+                "Content-Type": "application/json"
+            });
+
+            // Effects
+            useEffect(() => {
+                if (token) {
+                    fetchSessions();
+                    fetchMemories();
+                    fetchMetrics();
+                }
+            }, [token]);
+
+            useEffect(() => {
+                if (chatEndRef.current) {
+                    chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+                }
+            }, [messages]);
+
+            useEffect(() => {
+                if (token) {
+                    if (activeTab === 'graph') {
+                        renderGraph();
+                    } else if (activeTab === 'eval') {
+                        fetchMetrics();
+                    }
+                }
+            }, [activeTab]);
+
+            // Icons utility
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            });
+
+            // --- API Calls ---
+
+            const handleLogin = async (e) => {
+                e.preventDefault();
+                setAuthError('');
+                try {
+                    const formData = new URLSearchParams();
+                    formData.append('username', authUsername);
+                    formData.append('password', authPassword);
+
+                    const res = await fetch(`${API_BASE}/auth/login`, {
+                        method: 'POST',
+                        body: formData,
+                        headers: { "Content-Type": "application/x-www-form-urlencoded" }
+                    });
+
+                    if (!res.ok) throw new Error("Invalid username or password");
+                    const data = await res.json();
+                    
+                    localStorage.setItem('token', data.access_token);
+                    localStorage.setItem('username', data.username);
+                    localStorage.setItem('role', data.role);
+                    
+                    setToken(data.access_token);
+                    setUsername(data.username);
+                    setRole(data.role);
+                } catch (err) {
+                    setAuthError(err.message);
+                }
+            };
+
+            const handleRegister = async (e) => {
+                e.preventDefault();
+                setAuthError('');
+                try {
+                    const res = await fetch(`${API_BASE}/auth/register`, {
+                        method: 'POST',
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            username: authUsername,
+                            password: authPassword,
+                            role: "user"
+                        })
+                    });
+
+                    if (!res.ok) {
+                        const data = await res.json();
+                        throw new Error(data.detail || "Registration failed");
+                    }
+                    setIsRegistering(false);
+                    alert("Registered successfully! Please log in.");
+                } catch (err) {
+                    setAuthError(err.message);
+                }
+            };
+
+            const handleLogout = () => {
+                localStorage.clear();
+                setToken('');
+                setUsername('');
+                setRole('');
+                setMessages([]);
+                setSessions([]);
+                setMemories([]);
+            };
+
+            const fetchSessions = async () => {
+                try {
+                    const res = await fetch(`${API_BASE}/memory`, { headers: getHeaders() });
+                    // To fetch user sessions, we can trigger a temporary query endpoint or list user collections.
+                    // We will query "/api/v1/chat" sessions inside backend database layer.
+                    // Let's create an endpoint in main.py or just use the local list
+                    const sessionRes = await fetch(`${API_BASE}/chat/sessions`, { headers: getHeaders() });
+                    if (sessionRes.ok) {
+                        const data = await sessionRes.json();
+                        setSessions(data);
+                        if (data.length > 0 && !currentSessionId) {
+                            selectSession(data[0].session_id);
+                        }
+                    }
+                } catch (err) {
+                    console.error("Error fetching sessions:", err);
+                }
+            };
+
+            const selectSession = async (sid) => {
+                setCurrentSessionId(sid);
+                // Load messages
+                try {
+                    const res = await fetch(`${API_BASE}/chat/sessions/${sid}`, { headers: getHeaders() });
+                    if (res.ok) {
+                        const data = await res.json();
+                        setMessages(data.messages || []);
+                    }
+                } catch (err) {
+                    console.error(err);
+                }
+            };
+
+            const startNewChat = () => {
+                setCurrentSessionId(uuidv4());
+                setMessages([]);
+            };
+
+            const uuidv4 = () => {
+                return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                    var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                    return v.toString(16);
+                });
+            };
+
+            const handleSendMessage = async (e) => {
+                e.preventDefault();
+                if (!inputMessage.trim() || isSending) return;
+
+                const userMsg = inputMessage;
+                setInputMessage('');
+                setIsSending(true);
+
+                const sid = currentSessionId || uuidv4();
+                if (!currentSessionId) {
+                    setCurrentSessionId(sid);
+                }
+
+                // Add to messages locally
+                const userObj = { role: 'user', content: userMsg, timestamp: new Date().toISOString() };
+                setMessages(prev => [...prev, userObj]);
+
+                try {
+                    const res = await fetch(`${API_BASE}/chat`, {
+                        method: 'POST',
+                        headers: getHeaders(),
+                        body: JSON.stringify({
+                            message: userMsg,
+                            session_id: sid
+                        })
+                    });
+
+                    if (!res.ok) throw new Error("Agent failed to respond.");
+                    const data = await res.json();
+                    
+                    // Add assistant message
+                    const assistObj = {
+                        role: 'assistant',
+                        content: data.response,
+                        timestamp: new Date().toISOString(),
+                        memories: data.retrieved_memories,
+                        entities: data.retrieved_entities,
+                        relations: data.retrieved_relations,
+                        sources: data.sources
+                    };
+                    setMessages(prev => [...prev, assistObj]);
+                    fetchMemories();
+                    fetchMetrics();
+                } catch (err) {
+                    setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message}` }]);
+                } finally {
+                    setIsSending(false);
+                }
+            };
+
+            // Memory Operations
+            const fetchMemories = async () => {
+                try {
+                    const res = await fetch(`${API_BASE}/memory`, { headers: getHeaders() });
+                    if (res.ok) {
+                        const data = await res.json();
+                        setMemories(data);
+                    }
+                } catch (err) {
+                    console.error("Error fetching memories:", err);
+                }
+            };
+
+            const handleAddMemory = async (e) => {
+                e.preventDefault();
+                if (!newMemoryText.trim()) return;
+
+                try {
+                    const res = await fetch(`${API_BASE}/memory/add`, {
+                        method: 'POST',
+                        headers: getHeaders(),
+                        body: JSON.stringify({
+                            text: newMemoryText,
+                            category: "manual",
+                            importance: 5
+                        })
+                    });
+                    if (res.ok) {
+                        setNewMemoryText('');
+                        fetchMemories();
+                    }
+                } catch (err) {
+                    console.error(err);
+                }
+            };
+
+            const handleDeleteMemory = async (mid) => {
+                if (!confirm("Are you sure you want to delete this memory?")) return;
+                try {
+                    const res = await fetch(`${API_BASE}/memory/${mid}`, {
+                        method: 'DELETE',
+                        headers: getHeaders()
+                    });
+                    if (res.ok) {
+                        fetchMemories();
+                    }
+                } catch (err) {
+                    console.error(err);
+                }
+            };
+
+            // Scraping & Upload Operations
+            const handleUploadFile = async (e) => {
+                e.preventDefault();
+                if (!file) return;
+                setIngestStatus("Uploading and parsing file...");
+                try {
+                    const formData = new FormData();
+                    formData.append("file", file);
+                    formData.append("category", "upload");
+
+                    const res = await fetch(`${API_BASE}/documents/upload`, {
+                        method: 'POST',
+                        headers: { "Authorization": `Bearer ${token}` },
+                        body: formData
+                    });
+
+                    const data = await res.json();
+                    if (res.ok) {
+                        setIngestStatus(`Success: ${data.message}`);
+                        setFile(null);
+                        // Redirect to Knowledge Graph tab automatically to show new nodes
+                        setTimeout(() => {
+                            setActiveTab('graph');
+                        }, 1200);
+                    } else {
+                        setIngestStatus(`Error: ${data.detail}`);
+                    }
+                } catch (err) {
+                    setIngestStatus(`Failed: ${err.message}`);
+                }
+            };
+
+            const handleScrapeUrl = async (e) => {
+                e.preventDefault();
+                if (!scrapeUrl.trim()) return;
+                setIngestStatus("Scraping webpage...");
+                try {
+                    const res = await fetch(`${API_BASE}/documents/scrape`, {
+                        method: 'POST',
+                        headers: getHeaders(),
+                        body: JSON.stringify({ url: scrapeUrl, category: "webpage" })
+                    });
+                    const data = await res.json();
+                    if (res.ok) {
+                        setIngestStatus(`Success: ${data.message}`);
+                        setScrapeUrl('');
+                        // Redirect to Knowledge Graph tab automatically to show new nodes
+                        setTimeout(() => {
+                            setActiveTab('graph');
+                        }, 1200);
+                    } else {
+                        setIngestStatus(`Error: ${data.detail}`);
+                    }
+                } catch (err) {
+                    setIngestStatus(`Failed: ${err.message}`);
+                }
+            };
+
+            // Metrics/Evaluation Operations
+            const fetchMetrics = async () => {
+                try {
+                    const res = await fetch(`${API_BASE}/evaluate/metrics`, { headers: getHeaders() });
+                    if (res.ok) {
+                        const data = await res.json();
+                        setMetrics(data);
+                    }
+                } catch (err) {
+                    console.error("Error loading metrics:", err);
+                }
+            };
+
+            // Render Knowledge Graph
+            const renderGraph = async () => {
+                if (!graphContainerRef.current) return;
+                try {
+                    // Fetch graph neighborhood
+                    const res = await fetch(`${API_BASE}/graph/neighborhood?node_names=LangGraph,LangChain,RAG`, { headers: getHeaders() });
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    
+                    if (!data.nodes || data.nodes.length === 0) {
+                        setHasGraphNodes(false);
+                        return;
+                    }
+                    setHasGraphNodes(true);
+                    
+                    const nodes = data.nodes.map(n => ({
+                        id: n.id,
+                        label: n.name,
+                        title: n.description || n.name,
+                        color: {
+                            background: '#8b5cf6',
+                            border: '#7c3aed',
+                            highlight: { background: '#ede9fe', border: '#7c3aed' }
+                        },
+                        font: { color: '#ffffff' }
+                    }));
+
+                    const edges = data.edges.map(e => ({
+                        from: e.source_id,
+                        to: e.target_id,
+                        label: e.relation_type,
+                        font: { color: '#a78bfa', size: 10, align: 'top' },
+                        color: { color: '#4c1d95', highlight: '#8b5cf6' },
+                        arrows: 'to'
+                    }));
+
+                    const container = graphContainerRef.current;
+                    const graphData = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
+                    const options = {
+                        physics: {
+                            barnesHut: { gravitationalConstant: -3000, centralGravity: 0.3, springLength: 95 }
+                        },
+                        height: '100%',
+                        width: '100%'
+                    };
+                    
+                    networkRef.current = new vis.Network(container, graphData, options);
+                } catch (err) {
+                    console.error(err);
+                }
+            };
+
+            // Auth Page rendering if no token
+            if (!token) {
+                return (
+                    <div class="h-screen w-screen flex items-center justify-center bg-dark-200">
+                        <div class="glass w-full max-w-md p-8 rounded-2xl shadow-2xl relative overflow-hidden">
+                            {/* Backdrop gradient glow */}
+                            <div class="absolute -top-24 -left-24 w-48 h-48 rounded-full bg-brand-500/20 blur-3xl"></div>
+                            <div class="absolute -bottom-24 -right-24 w-48 h-48 rounded-full bg-pink-500/10 blur-3xl"></div>
+                            
+                            <div class="text-center mb-8 relative">
+                                <h1 class="text-3xl font-extrabold text-white tracking-tight font-outfit mb-2">Memory Chatbot</h1>
+                                <p class="text-slate-400 text-sm">Sign in to experience high-fidelity Hybrid Agentic Chat</p>
+                            </div>
+
+                            {authError && (
+                                <div class="mb-4 p-3 rounded-lg bg-red-950/40 border border-red-800/30 text-red-400 text-xs flex items-center">
+                                    <i data-lucide="alert-circle" class="w-4 h-4 mr-2 flex-shrink-0"></i>
+                                    {authError}
+                                </div>
+                            )}
+
+                            <form onSubmit={isRegistering ? handleRegister : handleLogin} class="space-y-4 relative">
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Username</label>
+                                    <input 
+                                        type="text" 
+                                        required 
+                                        value={authUsername}
+                                        onChange={(e) => setAuthUsername(e.target.value)}
+                                        class="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 text-sm transition"
+                                        placeholder="Enter your username"
+                                    />
+                                </div>
+
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Password</label>
+                                    <input 
+                                        type="password" 
+                                        required 
+                                        value={authPassword}
+                                        onChange={(e) => setAuthPassword(e.target.value)}
+                                        class="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 text-sm transition"
+                                        placeholder="••••••••"
+                                    />
+                                </div>
+
+                                <button 
+                                    type="submit" 
+                                    class="w-full bg-gradient-to-r from-brand-600 to-brand-700 hover:from-brand-500 hover:to-brand-600 text-white font-semibold py-3 rounded-xl shadow-lg hover:shadow-brand-500/20 transition-all duration-200 mt-6 text-sm"
+                                >
+                                    {isRegistering ? "Create Account" : "Access Console"}
+                                </button>
+                            </form>
+
+                            <div class="mt-6 text-center text-xs text-slate-400 relative">
+                                {isRegistering ? (
+                                    <span>Already have an account? <button onClick={() => { setIsRegistering(false); setAuthError(''); }} class="text-brand-500 font-semibold hover:underline">Log In</button></span>
+                                ) : (
+                                    <span>New user? <button onClick={() => { setIsRegistering(true); setAuthError(''); }} class="text-brand-500 font-semibold hover:underline">Create Account</button></span>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            // Main Application Rendering
+            return (
+                <div class="h-full flex overflow-hidden">
+                    {/* Navigation Sidebar */}
+                    <div class="w-64 glass border-r border-slate-800 flex flex-col justify-between">
+                        <div>
+                            {/* Logo */}
+                            <div class="p-6 flex items-center border-b border-slate-800/80">
+                                <div class="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center mr-3 shadow-md shadow-brand-500/30">
+                                    <i data-lucide="cpu" class="w-4 h-4 text-white"></i>
+                                </div>
+                                <div>
+                                    <h2 class="font-bold text-white text-sm font-outfit leading-tight">AGY Agentic</h2>
+                                    <p class="text-[10px] text-brand-500 font-semibold">Active Memory v1.0</p>
+                                </div>
+                            </div>
+
+                            {/* Tab items */}
+                            <nav class="p-4 space-y-1.5">
+                                <button 
+                                    onClick={() => setActiveTab('chat')} 
+                                    class={`w-full flex items-center px-4 py-3 rounded-xl text-sm font-semibold transition-all ${activeTab === 'chat' ? 'glass-active text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'}`}
+                                >
+                                    <i data-lucide="message-square" class="w-4.5 h-4.5 mr-3"></i>
+                                    Agent Chat
+                                </button>
+
+                                <button 
+                                    onClick={() => setActiveTab('memory')} 
+                                    class={`w-full flex items-center px-4 py-3 rounded-xl text-sm font-semibold transition-all ${activeTab === 'memory' ? 'glass-active text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'}`}
+                                >
+                                    <i data-lucide="database" class="w-4.5 h-4.5 mr-3"></i>
+                                    User Profile
+                                </button>
+
+                                <button 
+                                    onClick={() => setActiveTab('graph')} 
+                                    class={`w-full flex items-center px-4 py-3 rounded-xl text-sm font-semibold transition-all ${activeTab === 'graph' ? 'glass-active text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'}`}
+                                >
+                                    <i data-lucide="share-2" class="w-4.5 h-4.5 mr-3"></i>
+                                    Knowledge Graph
+                                </button>
+
+                                <button 
+                                    onClick={() => setActiveTab('docs')} 
+                                    class={`w-full flex items-center px-4 py-3 rounded-xl text-sm font-semibold transition-all ${activeTab === 'docs' ? 'glass-active text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'}`}
+                                >
+                                    <i data-lucide="upload-cloud" class="w-4.5 h-4.5 mr-3"></i>
+                                    Ingestion Pipeline
+                                </button>
+
+                                <button 
+                                    onClick={() => setActiveTab('eval')} 
+                                    class={`w-full flex items-center px-4 py-3 rounded-xl text-sm font-semibold transition-all ${activeTab === 'eval' ? 'glass-active text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'}`}
+                                >
+                                    <i data-lucide="trending-up" class="w-4.5 h-4.5 mr-3"></i>
+                                    Ragas Dashboard
+                                </button>
+                            </nav>
+                        </div>
+
+                        {/* User profile actions */}
+                        <div class="p-4 border-t border-slate-800/80 bg-slate-950/20">
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center min-w-0">
+                                    <div class="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-xs font-bold text-white mr-2.5">
+                                        {username.slice(0,2).toUpperCase()}
+                                    </div>
+                                    <div class="min-w-0">
+                                        <p class="text-xs font-bold text-white truncate leading-none mb-0.5">{username}</p>
+                                        <p class="text-[10px] text-slate-500 font-semibold truncate capitalize leading-none">{role}</p>
+                                    </div>
+                                </div>
+                                <button onClick={handleLogout} class="p-1.5 hover:bg-red-950/20 rounded-lg text-slate-500 hover:text-red-400 transition">
+                                    <i data-lucide="log-out" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Main Content Area */}
+                    <div class="flex-1 flex flex-col overflow-hidden bg-dark-100">
+                        {/* Tab Contents */}
+                        
+                        {/* CHAT TAB */}
+                        {activeTab === 'chat' && (
+                            <div class="flex-1 flex overflow-hidden">
+                                {/* Session Sidebar / Left panel */}
+                                <div class="w-72 border-r border-slate-800/80 flex flex-col justify-between hidden md:flex">
+                                    <div class="p-4 flex-1 overflow-y-auto custom-scrollbar space-y-4">
+                                        <button 
+                                            onClick={startNewChat}
+                                            class="w-full bg-brand-600 hover:bg-brand-500 text-white text-xs font-bold py-2.5 px-4 rounded-xl flex items-center justify-center transition shadow-lg shadow-brand-600/10"
+                                        >
+                                            <i data-lucide="plus" class="w-4 h-4 mr-2"></i>
+                                            New Discussion
+                                        </button>
+                                        
+                                        <div>
+                                            <h3 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2.5 px-1">Active Discussions</h3>
+                                            <div class="space-y-1">
+                                                {sessions.length === 0 ? (
+                                                    <p class="text-xs text-slate-500 italic px-1">No past chat sessions found.</p>
+                                                ) : (
+                                                    sessions.map(s => (
+                                                        <button 
+                                                            key={s.session_id} 
+                                                            onClick={() => selectSession(s.session_id)}
+                                                            class={`w-full text-left p-3 rounded-xl text-xs transition truncate block border ${currentSessionId === s.session_id ? 'bg-slate-900 border-slate-700/50 text-white font-semibold' : 'border-transparent text-slate-400 hover:bg-slate-900/30 hover:text-slate-200'}`}
+                                                        >
+                                                            {s.title || "Untitled Chat"}
+                                                        </button>
+                                                    ))
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Chat window */}
+                                <div class="flex-1 flex flex-col justify-between relative">
+                                    <div class="flex-1 p-6 overflow-y-auto custom-scrollbar space-y-6">
+                                        {messages.length === 0 ? (
+                                            <div class="h-full flex flex-col items-center justify-center text-center max-w-md mx-auto">
+                                                <div class="w-12 h-12 rounded-2xl bg-brand-900/30 border border-brand-700/20 flex items-center justify-center text-brand-500 mb-4 glow-pulse">
+                                                    <i data-lucide="message-square" class="w-6 h-6"></i>
+                                                </div>
+                                                <h3 class="text-lg font-bold text-white mb-1 font-outfit">Welcome, {username}</h3>
+                                                <p class="text-slate-400 text-xs leading-relaxed">
+                                                    I am your memory-augmented agent. I compile details about your goals, interests, and past statements to deliver deep, contextual responses.
+                                                </p>
+                                            </div>
+                                        ) : (
+                                            messages.map((m, idx) => (
+                                                <div key={idx} class={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                                    <div class={`max-w-[75%] rounded-2xl p-4 text-sm ${m.role === 'user' ? 'bg-brand-600 text-white rounded-br-none shadow-lg shadow-brand-600/10' : 'glass border-slate-800 text-slate-100 rounded-bl-none'}`}>
+                                                        <p class="whitespace-pre-wrap leading-relaxed">{m.content}</p>
+                                                        
+                                                        {/* Metadata and Citations for Assistant response */}
+                                                        {m.role === 'assistant' && (m.memories?.length > 0 || m.entities?.length > 0 || m.sources?.length > 0) && (
+                                                            <div class="mt-3.5 pt-3 border-t border-slate-800/80 text-[10px] text-slate-500 space-y-1.5">
+                                                                {m.memories && m.memories.length > 0 && (
+                                                                    <div class="flex items-start">
+                                                                        <span class="font-bold text-slate-400 uppercase mr-1">Recalled Memory:</span>
+                                                                        <span>{m.memories.join(", ")}</span>
+                                                                    </div>
+                                                                )}
+                                                                {m.entities && m.entities.length > 0 && (
+                                                                    <div class="flex items-start">
+                                                                        <span class="font-bold text-slate-400 uppercase mr-1">Retrieved Graph Nodes:</span>
+                                                                        <span>{m.entities.join(", ")}</span>
+                                                                    </div>
+                                                                )}
+                                                                {m.sources && m.sources.length > 0 && (
+                                                                    <div class="flex items-start">
+                                                                        <span class="font-bold text-slate-400 uppercase mr-1">Sources Cited:</span>
+                                                                        <span>{m.sources.map(s => `[${s}]`).join(", ")}</span>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ))
+                                        )}
+                                        {isSending && (
+                                            <div class="flex justify-start">
+                                                <div class="glass border-slate-800 rounded-2xl rounded-bl-none p-4 flex items-center space-x-2">
+                                                    <span class="text-xs text-slate-400">Agent reasoning...</span>
+                                                    <div class="flex space-x-1">
+                                                        <div class="w-1.5 h-1.5 bg-brand-500 rounded-full animate-bounce" style={{animationDelay: '0ms'}}></div>
+                                                        <div class="w-1.5 h-1.5 bg-brand-500 rounded-full animate-bounce" style={{animationDelay: '150ms'}}></div>
+                                                        <div class="w-1.5 h-1.5 bg-brand-500 rounded-full animate-bounce" style={{animationDelay: '300ms'}}></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                        <div ref={chatEndRef}></div>
+                                    </div>
+
+                                    {/* Chat input footer */}
+                                    <form onSubmit={handleSendMessage} class="p-6 border-t border-slate-800/80 bg-slate-950/20 flex space-x-3">
+                                        <input 
+                                            type="text" 
+                                            value={inputMessage}
+                                            onChange={(e) => setInputMessage(e.target.value)}
+                                            placeholder="Ask a question or share a fact (e.g. 'I am a backend architect')..."
+                                            class="flex-1 bg-slate-900/60 border border-slate-800/80 rounded-xl px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 text-sm transition"
+                                        />
+                                        <button 
+                                            type="submit" 
+                                            disabled={isSending}
+                                            class="bg-brand-600 hover:bg-brand-500 disabled:bg-slate-800 text-white rounded-xl px-5 flex items-center justify-center transition shadow-lg shadow-brand-500/10"
+                                        >
+                                            <i data-lucide="send" class="w-4 h-4"></i>
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* MEMORY VIEW TAB */}
+                        {activeTab === 'memory' && (
+                            <div class="flex-1 p-8 overflow-y-auto custom-scrollbar space-y-6">
+                                <div class="max-w-4xl mx-auto space-y-6">
+                                    <div>
+                                        <h2 class="text-2xl font-bold text-white font-outfit mb-1">Long-Term Memory Vault</h2>
+                                        <p class="text-slate-400 text-xs">View, edit, and organize permanent facts, skills, and preferences registered in MongoDB.</p>
+                                    </div>
+                                    
+                                    <div class="glass p-6 rounded-2xl space-y-4">
+                                        <h3 class="text-sm font-semibold text-white">Manually Add Memory Node</h3>
+                                        <form onSubmit={handleAddMemory} class="flex space-x-3">
+                                            <input 
+                                                type="text"
+                                                value={newMemoryText}
+                                                onChange={(e) => setNewMemoryText(e.target.value)}
+                                                placeholder="e.g. User prefers Python and Postgres over Node.js"
+                                                class="flex-1 bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3 text-slate-100 text-sm focus:outline-none focus:border-brand-500"
+                                            />
+                                            <button type="submit" class="bg-brand-600 hover:bg-brand-500 text-white px-5 rounded-xl text-xs font-semibold transition">
+                                                Insert Fact
+                                            </button>
+                                        </form>
+                                    </div>
+
+                                    <div>
+                                        <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3.5">Active Memory Cards ({memories.length})</h3>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            {memories.length === 0 ? (
+                                                <p class="text-xs text-slate-500 italic">No long-term facts stored yet. Speak to the chatbot to record memories dynamically.</p>
+                                            ) : (
+                                                memories.map(m => (
+                                                    <div key={m.id} class="glass p-4 rounded-xl flex justify-between items-start hover:border-slate-700/80 transition duration-200">
+                                                        <div class="space-y-2">
+                                                            <div class="flex items-center space-x-2">
+                                                                <span class="text-[10px] font-bold uppercase bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full border border-slate-700/60">
+                                                                    {m.category}
+                                                                </span>
+                                                                <span class="text-[10px] font-bold text-brand-500">
+                                                                    Relevance Score: {m.importance}/10
+                                                                </span>
+                                                            </div>
+                                                            <p class="text-sm text-slate-200">{m.text}</p>
+                                                        </div>
+                                                        <button 
+                                                            onClick={() => handleDeleteMemory(m.id)}
+                                                            class="p-1 hover:bg-red-950/20 text-slate-500 hover:text-red-400 rounded-lg transition"
+                                                        >
+                                                            <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                                        </button>
+                                                    </div>
+                                                ))
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* GRAPH TAB */}
+                        {activeTab === 'graph' && (
+                            <div class="flex-1 flex flex-col overflow-hidden">
+                                <div class="p-6 border-b border-slate-800/80">
+                                    <h2 class="text-lg font-bold text-white font-outfit leading-none mb-1">Knowledge Graph Visualization</h2>
+                                    <p class="text-xs text-slate-400">Interactive Neo4j graph nodes and relationship clusters mapped from parsed articles.</p>
+                                </div>
+                                <div class="flex-1 relative bg-dark-200">
+                                    <div ref={graphContainerRef} class="h-full w-full"></div>
+                                    {!hasGraphNodes && (
+                                        <div class="absolute inset-0 flex items-center justify-center p-6 bg-dark-200/80 backdrop-blur-sm">
+                                            <div class="glass max-w-md p-8 rounded-2xl text-center space-y-4">
+                                                <div class="w-12 h-12 rounded-2xl bg-brand-900/30 border border-brand-700/20 flex items-center justify-center text-brand-500 mx-auto">
+                                                    <i data-lucide="share-2" class="w-6 h-6"></i>
+                                                </div>
+                                                <h3 class="text-lg font-bold text-white font-outfit">No Knowledge Graph Nodes Yet</h3>
+                                                <p class="text-xs text-slate-400 leading-relaxed">
+                                                    Upload a file or scrape a webpage in the <strong>Ingestion Pipeline</strong> tab to automatically extract entities and build your interactive Knowledge Graph.
+                                                </p>
+                                                <button onClick={() => setActiveTab('docs')} class="bg-brand-600 hover:bg-brand-500 text-white font-semibold text-xs py-2.5 px-5 rounded-xl transition shadow-lg shadow-brand-500/20">
+                                                    Go to Ingestion Pipeline
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* INGESTION TAB */}
+                        {activeTab === 'docs' && (
+                            <div class="flex-1 p-8 overflow-y-auto custom-scrollbar space-y-6">
+                                <div class="max-w-4xl mx-auto space-y-6">
+                                    <div>
+                                        <h2 class="text-2xl font-bold text-white font-outfit mb-1">Document Ingestion Pipeline</h2>
+                                        <p class="text-slate-400 text-xs">Load custom files or scrape websites to index them directly into Chroma and Neo4j.</p>
+                                    </div>
+
+                                    {ingestStatus && (
+                                        <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 text-xs flex items-center shadow-md">
+                                            <i data-lucide="info" class="w-4.5 h-4.5 mr-2.5 text-brand-500"></i>
+                                            {ingestStatus}
+                                        </div>
+                                    )}
+
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        {/* File Upload card */}
+                                        <div class="glass p-6 rounded-2xl flex flex-col justify-between">
+                                            <div>
+                                                <h3 class="text-sm font-bold text-white mb-2 flex items-center">
+                                                    <i data-lucide="file" class="w-4 h-4 mr-2 text-brand-500"></i>
+                                                    Index File
+                                                </h3>
+                                                <p class="text-xs text-slate-400 mb-6 leading-relaxed">
+                                                    Upload PDF reports, Markdown research sheets, CSV data charts, or plain text to feed our Vector Indexing agent.
+                                                </p>
+                                                
+                                                <input 
+                                                    type="file" 
+                                                    onChange={(e) => setFile(e.target.files[0])}
+                                                    class="w-full bg-slate-900/50 border border-dashed border-slate-700/50 hover:border-brand-500/50 rounded-xl px-4 py-6 text-slate-400 text-xs text-center cursor-pointer transition focus:outline-none"
+                                                />
+                                            </div>
+                                            <button 
+                                                onClick={handleUploadFile}
+                                                disabled={!file}
+                                                class="w-full bg-brand-600 hover:bg-brand-500 disabled:bg-slate-800 text-white font-semibold py-3.5 rounded-xl text-xs transition mt-6 shadow-md"
+                                            >
+                                                Ingest Selected File
+                                            </button>
+                                        </div>
+
+                                        {/* Web Scraper card */}
+                                        <div class="glass p-6 rounded-2xl flex flex-col justify-between">
+                                            <div>
+                                                <h3 class="text-sm font-bold text-white mb-2 flex items-center">
+                                                    <i data-lucide="globe" class="w-4 h-4 mr-2 text-brand-500"></i>
+                                                    Scrape URL
+                                                </h3>
+                                                <p class="text-xs text-slate-400 mb-6 leading-relaxed">
+                                                    Scrape research documentation pages, blogs, or articles using BeautifulSoup. Data will be structured and converted to vector space.
+                                                </p>
+                                                
+                                                <input 
+                                                    type="url"
+                                                    value={scrapeUrl}
+                                                    onChange={(e) => setScrapeUrl(e.target.value)}
+                                                    placeholder="https://example.com/ai-research-documentation"
+                                                    class="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:border-brand-500 placeholder-slate-600"
+                                                />
+                                            </div>
+                                            <button 
+                                                onClick={handleScrapeUrl}
+                                                disabled={!scrapeUrl.trim()}
+                                                class="w-full bg-brand-600 hover:bg-brand-500 disabled:bg-slate-800 text-white font-semibold py-3.5 rounded-xl text-xs transition mt-6 shadow-md"
+                                            >
+                                                Scrape Website Data
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* EVALUATION TAB */}
+                        {activeTab === 'eval' && (
+                            <div class="flex-1 p-8 overflow-y-auto custom-scrollbar space-y-6">
+                                <div class="max-w-4xl mx-auto space-y-6">
+                                    <div>
+                                        <h2 class="text-2xl font-bold text-white font-outfit mb-1">Ragas Quality Analytics</h2>
+                                        <p class="text-slate-400 text-xs">Self-evaluated quality score statistics generated during agentic response turns.</p>
+                                    </div>
+
+                                    {/* Metric Card deck */}
+                                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                        <div class="glass p-5 rounded-xl text-center space-y-1">
+                                            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Faithfulness</p>
+                                            <h3 class="text-3xl font-extrabold text-brand-500 font-outfit">
+                                                {(metrics.average_faithfulness * 100).toFixed(0)}%
+                                            </h3>
+                                            <p class="text-[10px] text-slate-500">Hallucination protection safety rate</p>
+                                        </div>
+
+                                        <div class="glass p-5 rounded-xl text-center space-y-1">
+                                            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Answer Relevance</p>
+                                            <h3 class="text-3xl font-extrabold text-brand-500 font-outfit">
+                                                {(metrics.average_relevance * 100).toFixed(0)}%
+                                            </h3>
+                                            <p class="text-[10px] text-slate-500">Addressing user query accurately</p>
+                                        </div>
+
+                                        <div class="glass p-5 rounded-xl text-center space-y-1">
+                                            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Context Recall</p>
+                                            <h3 class="text-3xl font-extrabold text-brand-500 font-outfit">
+                                                {(metrics.average_recall * 100).toFixed(0)}%
+                                            </h3>
+                                            <p class="text-[10px] text-slate-500">Retrieval completeness coverage</p>
+                                        </div>
+                                    </div>
+
+                                    {/* Cost stats */}
+                                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                        <div class="glass p-5 rounded-xl text-center space-y-1">
+                                            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Evaluated Turns</p>
+                                            <h3 class="text-3xl font-extrabold text-white font-outfit">{metrics.total_evaluations}</h3>
+                                        </div>
+
+                                        <div class="glass p-5 rounded-xl text-center space-y-1">
+                                            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Average System Latency</p>
+                                            <h3 class="text-3xl font-extrabold text-white font-outfit">{metrics.average_latency.toFixed(2)}s</h3>
+                                        </div>
+
+                                        <div class="glass p-5 rounded-xl text-center space-y-1">
+                                            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Accrued Tokens Cost</p>
+                                            <h3 class="text-3xl font-extrabold text-white font-outfit">${metrics.total_cost.toFixed(5)}</h3>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // Render application
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>

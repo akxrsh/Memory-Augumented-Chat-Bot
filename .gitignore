@@ -1,0 +1,17 @@
+# Private keys and local config
+.env
+
+# Data & local databases
+data/
+chroma_db/
+local_fallback.db
+
+# Python bytecode and caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest/
+
+# OS metadata
+.DS_Store
+Thumbs.db
